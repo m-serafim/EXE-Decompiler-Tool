@@ -55,6 +55,7 @@ capstone = _try_import("capstone")
 # ---------------------------------------------------------------------------
 
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_DISASM_INSTRUCTIONS = 4096
 MIN_STRING_LEN = 6
 OUTPUT_DIR = "output"
 
@@ -203,7 +204,11 @@ def detect_type(exe_path: Path) -> tuple[str, object]:
 
 def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run *cmd* capturing output, suppressing errors on failure."""
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kwargs)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kwargs)
+    except subprocess.TimeoutExpired:
+        warn(f"Comando expirou após 120s: {' '.join(cmd[:2])}")
+        return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Timeout")
 
 
 def _ensure_dir(d: str) -> Path:
@@ -334,12 +339,11 @@ def disassemble_native(exe_path: Path, source_dir: Path, pe) -> list[str]:
     lines.append("")
 
     count = 0
-    max_instructions = 4096
     for insn in md.disasm(code, base):
         lines.append(f"  0x{insn.address:08X}:  {insn.mnemonic:<8s} {insn.op_str}")
         count += 1
-        if count >= max_instructions:
-            lines.append(f"\n; … (truncado após {max_instructions} instruções)")
+        if count >= MAX_DISASM_INSTRUCTIONS:
+            lines.append(f"\n; … (truncado após {MAX_DISASM_INSTRUCTIONS} instruções)")
             break
 
     out_file = source_dir / "disassembly.asm"
@@ -356,7 +360,9 @@ def try_upx_unpack(exe_path: Path) -> Path | None:
         warn("UPX não encontrado. Instala com: apt install upx / brew install upx")
         return None
 
-    tmpfile = Path(tempfile.mktemp(suffix=".exe", prefix="upx_"))
+    tmp_fd, tmp_name = tempfile.mkstemp(suffix=".exe", prefix="upx_")
+    os.close(tmp_fd)
+    tmpfile = Path(tmp_name)
     shutil.copy2(exe_path, tmpfile)
     info("A tentar unpack UPX…")
     r = _run([upx, "-d", str(tmpfile)])
